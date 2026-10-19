@@ -112,7 +112,7 @@ export interface RebalanceEvent {
 export interface HarvestEvent {
   /** The protocol harvested from ("blend", "dex", or "multi") */
   protocol: string;
-  /** Amount actually resupplied; not a yield amount */
+  /** Amount actually resupplied; this is a compounding-cycle amount, not yield. */
   amount_cycled: bigint;
 }
 
@@ -298,21 +298,21 @@ export interface ApprovalTtlUpdatedEvent {
   new_ttl: number;
 }
 
-/** Emitted alongside ApprovalTtlUpdatedEvent whenever the shared protocol approval TTL is persisted, so operators can schedule a renewal before the approval window closes (Issue #847). Publishing the event never extends or renews an approval. */
+/** Emitted by the contract. */
 export interface ProtocolApprovalScheduledEvent {
-  /** Protocol whose approval window is described: SymbolShort("blend") for the legacy Blend-only setter, SymbolShort("dex") for a DEX-only window, or SymbolShort("both") when the shared TTL covers every protocol approval the vault can issue. */
+  /** Protocol whose approval window is described: `SymbolShort("blend")` for the legacy Blend-only setter, `SymbolShort("dex")` for a DEX-only window, or `SymbolShort("both")` when the shared TTL covers every protocol approval the vault can issue. */
   protocol: string;
   /** Ledger in which the emitting call was executed */
   current_ledger: number;
-  /** Persisted approval TTL in ledgers, equal to get_approval_ttl() */
+  /** Persisted approval TTL in ledgers, equal to `get_approval_ttl()` */
   approval_ttl: number;
   /** Ledger at which the approval granted with this TTL expires */
   expiry_ledger: number;
-  /** Ledgers of usable window between now and expiry (expiry_ledger - current_ledger) */
+  /** Ledgers of usable window between now and expiry (`expiry_ledger - current_ledger`) */
   available_window: number;
   /** Ledgers of lead time reserved for the renewal transaction */
   lead_time: number;
-  /** Ledger by which a renewal should be submitted so the approval never lapses (expiry_ledger - lead_time) */
+  /** Ledger by which a renewal should be submitted so the approval never lapses (`expiry_ledger - lead_time`) */
   renewal_deadline_ledger: number;
 }
 
@@ -637,6 +637,24 @@ export interface MigrationTargetUpdatedEvent {
 }
 
 /** Emitted by the contract. */
+export interface MigrationTargetScheduledEvent {
+  /** Address that will become the migration target once executed */
+  new_target: string;
+  /** Ledger at which `execute_migration_target()` becomes callable */
+  effective_ledger: number;
+  /** Owner who scheduled the change */
+  owner: string;
+}
+
+/** Emitted by the contract. */
+export interface MigrationTargetCancelledEvent {
+  /** Address whose pending change was cancelled */
+  cancelled_target: string;
+  /** Owner who cancelled the change */
+  owner: string;
+}
+
+/** Emitted by the contract. */
 export interface MigrationPausedEvent {
   /** `true` if migration is now paused, `false` if unpaused */
   paused: boolean;
@@ -652,8 +670,6 @@ export interface SharesLockedEvent {
   shares_locked: bigint;
   /** Lock duration in days */
   lock_duration_days: number;
-  /** Boost multiplier applied (e.g., 1.1x, 1.25x, 1.5x) */
-  boost_multiplier: number;
   /** Ledger when lock expires */
   expiry_ledger: number;
 }
@@ -1486,12 +1502,39 @@ export class VaultClient {
   }
 
   /**
-   * Function set_migration_target
+   * Function schedule_migration_target
+   * @param owner
    * @param target
    */
-  async set_migration_target(signer: StellarSdk.Keypair, target: string): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(target).toScVal()];
-    return this.invoke<void>('set_migration_target', args, signer);
+  async schedule_migration_target(signer: StellarSdk.Keypair, owner: string, target: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal(), new StellarSdk.Address(target).toScVal()];
+    return this.invoke<void>('schedule_migration_target', args, signer);
+  }
+
+  /**
+   * Function execute_migration_target
+   * @param owner
+   */
+  async execute_migration_target(signer: StellarSdk.Keypair, owner: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal()];
+    return this.invoke<void>('execute_migration_target', args, signer);
+  }
+
+  /**
+   * Function cancel_migration_target
+   * @param owner
+   */
+  async cancel_migration_target(signer: StellarSdk.Keypair, owner: string): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(owner).toScVal()];
+    return this.invoke<void>('cancel_migration_target', args, signer);
+  }
+
+  /**
+   * Function get_pending_migration_target
+   */
+  async get_pending_migration_target(sourcePublicKey: string): Promise<unknown | null> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown | null>('get_pending_migration_target', args, sourcePublicKey);
   }
 
   /**
@@ -2183,45 +2226,45 @@ export class VaultClient {
    * Preview shares minted for asset amount (floor), subject to the global preview rate limit
    * @param assets
    */
-  async preview_deposit_to_shares(signer: StellarSdk.Keypair, assets: bigint): Promise<TxResult<bigint>> {
+  async preview_deposit_to_shares(assets: bigint, sourcePublicKey: string): Promise<bigint> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(assets, { type: 'i128' })];
-    return this.invoke<bigint>('preview_deposit_to_shares', args, signer);
+    return this.simulate<bigint>('preview_deposit_to_shares', args, sourcePublicKey);
   }
 
   /**
    * Preview assets returned for share amount (floor), subject to the global preview rate limit
    * @param shares
    */
-  async preview_shares_to_assets(signer: StellarSdk.Keypair, shares: bigint): Promise<TxResult<bigint>> {
+  async preview_shares_to_assets(shares: bigint, sourcePublicKey: string): Promise<bigint> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(shares, { type: 'i128' })];
-    return this.invoke<bigint>('preview_shares_to_assets', args, signer);
+    return this.simulate<bigint>('preview_shares_to_assets', args, sourcePublicKey);
   }
 
   /**
    * Preview shares burned for withdrawal amount (ceil), subject to the global preview rate limit
    * @param assets
    */
-  async preview_withdraw(signer: StellarSdk.Keypair, assets: bigint): Promise<TxResult<bigint>> {
+  async preview_withdraw(assets: bigint, sourcePublicKey: string): Promise<bigint> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(assets, { type: 'i128' })];
-    return this.invoke<bigint>('preview_withdraw', args, signer);
+    return this.simulate<bigint>('preview_withdraw', args, sourcePublicKey);
   }
 
   /**
    * Convert asset amount to shares (floor), subject to the global preview rate limit
    * @param assets
    */
-  async convert_to_shares(signer: StellarSdk.Keypair, assets: bigint): Promise<TxResult<bigint>> {
+  async convert_to_shares(assets: bigint, sourcePublicKey: string): Promise<bigint> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(assets, { type: 'i128' })];
-    return this.invoke<bigint>('convert_to_shares', args, signer);
+    return this.simulate<bigint>('convert_to_shares', args, sourcePublicKey);
   }
 
   /**
    * Convert share amount to assets (floor), subject to the global preview rate limit
    * @param shares
    */
-  async convert_to_assets(signer: StellarSdk.Keypair, shares: bigint): Promise<TxResult<bigint>> {
+  async convert_to_assets(shares: bigint, sourcePublicKey: string): Promise<bigint> {
     const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(shares, { type: 'i128' })];
-    return this.invoke<bigint>('convert_to_assets', args, signer);
+    return this.simulate<bigint>('convert_to_assets', args, sourcePublicKey);
   }
 
   /**
@@ -2255,6 +2298,14 @@ export class VaultClient {
   async is_paused(sourcePublicKey: string): Promise<boolean> {
     const args: StellarSdk.xdr.ScVal[] = [];
     return this.simulate<boolean>('is_paused', args, sourcePublicKey);
+  }
+
+  /**
+   * Function get_vault_health_snapshot
+   */
+  async get_vault_health_snapshot(sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<unknown>('get_vault_health_snapshot', args, sourcePublicKey);
   }
 
   /**
@@ -2375,23 +2426,6 @@ export class VaultClient {
   }
 
   /**
-   * Returns a read-only snapshot of vault health and operational state (#838)
-   */
-  async get_vault_health_snapshot(sourcePublicKey: string): Promise<unknown> {
-    const args: StellarSdk.xdr.ScVal[] = [];
-    return this.simulate<unknown>('get_vault_health_snapshot', args, sourcePublicKey);
-  }
-
-  /**
-   * Returns the next withdrawal eligibility for a user (#846)
-   * @param user
-   */
-  async get_withdrawal_eligibility(user: string, sourcePublicKey: string): Promise<unknown> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
-    return this.simulate<unknown>('get_withdrawal_eligibility', args, sourcePublicKey);
-  }
-
-  /**
    * Function cancel_withdrawal_request
    * @param user
    * @param request_id
@@ -2399,6 +2433,15 @@ export class VaultClient {
   async cancel_withdrawal_request(signer: StellarSdk.Keypair, user: string, request_id: number): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(request_id, { type: 'u32' })];
     return this.invoke<void>('cancel_withdrawal_request', args, signer);
+  }
+
+  /**
+   * Function get_withdrawal_eligibility
+   * @param user
+   */
+  async get_withdrawal_eligibility(user: string, sourcePublicKey: string): Promise<unknown> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal()];
+    return this.simulate<unknown>('get_withdrawal_eligibility', args, sourcePublicKey);
   }
 
   /**
