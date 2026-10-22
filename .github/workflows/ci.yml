@@ -532,6 +532,21 @@ jobs:
       - name: Validate README
         run: bash scripts/check-readme.sh .
 
+  # i18n key parity (#932): every frontend locale catalog (en, es, fr, ja, pt,
+  # zh) must define exactly the keys in messages/en.json, and the locale lists
+  # in i18n/request.ts and middleware.ts must match the catalogs on disk.
+  i18n-parity:
+    name: Frontend i18n Key Parity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Check locale catalogs for missing/extra keys
+        run: python3 scripts/check-i18n-parity.py
+
   security-audit:
     name: Security Documentation Audit
     runs-on: ubuntu-latest
