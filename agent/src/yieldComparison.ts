@@ -331,7 +331,7 @@ export async function evaluateYield(
       }
     }
 
-    return { shouldRebalance: true, targetProtocol };
+    return { shouldRebalance: true, targetProtocol, targetApy };
   } catch {
     return { shouldRebalance: false };
   }
