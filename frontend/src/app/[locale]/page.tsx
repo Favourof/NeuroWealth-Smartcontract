@@ -12,7 +12,7 @@ import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { MessageSquare, Bot, ArrowRight, Zap, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 import { useTranslations } from 'next-intl';
 import { connectFreighterWallet } from '@/lib/freighter';
-import { fetchVaultState, setUserStrategy, VaultState } from '@/lib/stellar';
+import { EMPTY_VAULT_STATE, fetchVaultState, setUserStrategy, VaultState } from '@/lib/stellar';
 import {
   getEarningsSummary,
   getPortfolioValueHistory,
@@ -25,12 +25,7 @@ import {
 export default function DashboardPage() {
   const t = useTranslations('Index');
   const [publicKey, setPublicKey] = useState<string | null>(null);
-  const [vaultState, setVaultState] = useState<VaultState>({
-    balance: 0,
-    strategy: 'Balanced',
-    exchangeRate: 1.042,
-    apy: 8.4
-  });
+  const [vaultState, setVaultState] = useState<VaultState>({ ...EMPTY_VAULT_STATE });
   const [earnings, setEarnings] = useState<EarningsSummary>({ today: 0, week: 0, month: 0 });
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
@@ -95,7 +90,7 @@ export default function DashboardPage() {
     if (publicKey) {
       loadData(abortController.signal);
     } else {
-      setVaultState({ balance: 0, strategy: 'Balanced', exchangeRate: 1.042, apy: 8.4 });
+      setVaultState({ ...EMPTY_VAULT_STATE });
       setEarnings({ today: 0, week: 0, month: 0 });
       setChartData([]);
       setTransactions([]);
