@@ -224,7 +224,7 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
 
       if (decision.shouldRebalance && decision.targetProtocol) {
         logger.info({ targetProtocol: decision.targetProtocol, userStrategy }, 'Rebalance needed');
-        const expectedApy = currentApy; // use current evaluated APY or fetch it
+        const expectedApy = decision.targetApy ?? currentApy;
         const snapshot = {
           eventId: event.id,
           strategy: userStrategy,
@@ -232,10 +232,21 @@ async function handleVaultEvent(eventType: AlertEventType, event: rpc.Api.EventR
           currentApy,
           decision,
         };
-        await submitRebalanceTx(decision.targetProtocol, expectedApy, {
+        const result = await submitRebalanceTx(decision.targetProtocol, expectedApy, {
           decisionId: createDecisionId('deposit-event', event.id, snapshot),
           snapshot,
         });
+        if (result.status === 'rejected') {
+          logger.error(
+            { targetProtocol: decision.targetProtocol, rejectionReasons: result.rejectionReasons, eventId: event.id },
+            'Rebalance transaction was rejected',
+          );
+        } else {
+          logger.info(
+            { targetProtocol: decision.targetProtocol, status: result.status, txHash: result.txHash, operationId: result.operationId },
+            'Rebalance transaction processed',
+          );
+        }
       }
     } catch (error) {
       logger.error({ error: error instanceof Error ? error.message : error, userStrategy }, 'Yield evaluation failed for deposit');
