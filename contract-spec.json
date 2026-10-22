@@ -86,6 +86,33 @@
       "security": "Protects against inflation attacks with minimum deposit and non-zero mint guard"
     },
     {
+      "name": "receive_migration",
+      "category": "management",
+      "access": "public",
+      "description": "Function receive_migration",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address"
+        },
+        {
+          "name": "user",
+          "type": "Address"
+        },
+        {
+          "name": "amount",
+          "type": "i128"
+        }
+      ],
+      "returns": null,
+      "requires_auth": false,
+      "state_changing": true
+    },
+    {
       "name": "batch_deposit",
       "category": "liquidity",
       "access": "public",
@@ -384,6 +411,10 @@
           "type": "Env"
         },
         {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
           "name": "protocol",
           "type": "Symbol"
         },
@@ -517,6 +548,10 @@
           "type": "Env"
         },
         {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
           "name": "protocol",
           "type": "Symbol"
         },
@@ -574,6 +609,10 @@
           "type": "Env"
         },
         {
+          "name": "agent",
+          "type": "Address"
+        },
+        {
           "name": "blend_bps",
           "type": "u32"
         },
@@ -599,6 +638,10 @@
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "min_out",
@@ -1230,6 +1273,40 @@
       "state_changing": false
     },
     {
+      "name": "set_max_decrease_bps",
+      "category": "management",
+      "access": "owner-only",
+      "description": "Function set_max_decrease_bps",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        },
+        {
+          "name": "bps",
+          "type": "u32"
+        }
+      ],
+      "returns": null,
+      "requires_auth": true,
+      "state_changing": true
+    },
+    {
+      "name": "get_max_decrease_bps",
+      "category": "queries",
+      "access": "public",
+      "description": "Function get_max_decrease_bps",
+      "parameters": [
+        {
+          "name": "env",
+          "type": "Env"
+        }
+      ],
+      "returns": "u32",
+      "requires_auth": false,
+      "state_changing": false
+    },
+    {
       "name": "submit_mev_report",
       "category": "management",
       "access": "agent-only",
@@ -1238,6 +1315,10 @@
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "protocol",
@@ -1299,6 +1380,10 @@
         {
           "name": "env",
           "type": "Env"
+        },
+        {
+          "name": "agent",
+          "type": "Address"
         },
         {
           "name": "prediction",
@@ -2044,7 +2129,7 @@
           "type": "bool"
         },
         {
-          "name": "max_decrease_bps",
+          "name": "_max_decrease_bps",
           "type": "u32"
         }
       ],
@@ -3422,7 +3507,7 @@
     },
     {
       "name": "AgentUpdateCancelledEvent",
-      "topic": "unknown",
+      "topic": "agt_cncl",
       "description": "Emitted by the contract.",
       "fields": [
         {
@@ -4026,6 +4111,33 @@
           "name": "assets_transferred",
           "type": "i128",
           "description": "Amount of assets (USDC) transferred to new vault"
+        }
+      ]
+    },
+    {
+      "name": "MigrationReceivedEvent",
+      "topic": "unknown",
+      "description": "Emitted by the contract.",
+      "fields": [
+        {
+          "name": "user",
+          "type": "Address",
+          "description": "The user whose position was credited"
+        },
+        {
+          "name": "source_vault",
+          "type": "Address",
+          "description": "The vault that sent the migrated funds"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "description": "Amount of assets (USDC) credited"
+        },
+        {
+          "name": "shares_minted",
+          "type": "i128",
+          "description": "Shares minted for the credited amount"
         }
       ]
     },
@@ -4675,18 +4787,6 @@
       "code": 79,
       "description": "The call requires single-protocol mode, but multi-protocol mode is active."
     },
-    "VaultError::RateLimitExceeded": {
-      "code": 77,
-      "description": "The configured call rate for an operation has been exhausted."
-    },
-    "VaultError::InvalidRateLimitCategory": {
-      "code": 78,
-      "description": "The owner supplied an unsupported rate-limit category."
-    },
-    "VaultError::InvalidRateLimitConfig": {
-      "code": 79,
-      "description": "A rate-limit window must be non-zero when a limit is enabled."
-    },
     "VaultError::BatchSizeExceeded": {
       "code": 80,
       "description": "A batch contains more entries than the configured maximum."
@@ -4702,6 +4802,46 @@
     "VaultError::UnsupportedAsset": {
       "code": 83,
       "description": "The token is not configured for the requested vault asset operation."
+    },
+    "VaultError::RateLimitExceeded": {
+      "code": 84,
+      "description": "The configured call rate for an operation has been exhausted."
+    },
+    "VaultError::InvalidRateLimitCategory": {
+      "code": 85,
+      "description": "The owner supplied an unsupported rate-limit category."
+    },
+    "VaultError::InvalidRateLimitConfig": {
+      "code": 86,
+      "description": "A rate-limit window must be non-zero when a limit is enabled."
+    },
+    "VaultError::WithdrawalRequestAlreadyFulfilled": {
+      "code": 87,
+      "description": "The withdrawal request has already been fulfilled."
+    },
+    "VaultError::WithdrawalRequestAlreadyCancelled": {
+      "code": 88,
+      "description": "The withdrawal request has already been cancelled."
+    },
+    "VaultError::NotRequestOwner": {
+      "code": 89,
+      "description": "The caller is not the address that created this withdrawal request."
+    },
+    "VaultError::UnauthorizedAgentError": {
+      "code": 90,
+      "description": "The caller is neither the primary agent nor the standby agent (#653)."
+    },
+    "VaultError::AlreadyPaused": {
+      "code": 91,
+      "description": "`pause()` was called while the vault is already paused (#988)."
+    },
+    "VaultError::StandbyMatchesPrimaryAgent": {
+      "code": 92,
+      "description": "`update_standby_agent` was called with the primary agent's own address. Neither `NotInitialized` nor `InvalidStrategy` (the two variants this call site used interchangeably before) describes this case; both are unrelated error conditions reused by mistake."
+    },
+    "VaultError::DepositRejectedZeroAssetsWithShares": {
+      "code": 93,
+      "description": "The bootstrap 1:1 asset-to-share conversion was about to mint shares while existing shares are outstanding but the vault reports zero assets (#973). Minting here would value those existing holders' shares at zero, so the deposit is rejected instead."
     },
     "ValidationError": {
       "code": 100,

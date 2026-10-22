@@ -153,8 +153,8 @@ jobs:
           - name: "Vault UI Accessibility & Notifications"
             step: "vault-ui-test"
             working_directory: "packages/vault-ui"
-          - name: "Frontend Lint"
-            step: "frontend-lint"
+          - name: "Frontend Typecheck, Lint, Test & Build"
+            step: "frontend-check"
             working_directory: "frontend"
           - name: "Agent Typecheck, Lint & Tests"
             step: "agent-check"
@@ -162,6 +162,15 @@ jobs:
           - name: "WhatsApp Typecheck & Tests"
             step: "whatsapp-check"
             working_directory: "whatsapp"
+          - name: "Bridge Typecheck & Tests"
+            step: "bridge-check"
+            working_directory: "packages/bridge"
+          - name: "Monitoring Typecheck & Tests"
+            step: "monitoring-check"
+            working_directory: "packages/monitoring"
+          - name: "Admin Panel Lint & Build"
+            step: "admin-panel-check"
+            working_directory: "packages/admin-panel"
           - name: "Build WASM"
             step: "build-wasm"
             working_directory: "neurowealth-vault"
@@ -249,9 +258,12 @@ jobs:
               npm ci --prefix ../..
               npm test --prefix ../.. --workspace=@neurowealth/vault-ui
               ;;
-            frontend-lint)
+            frontend-check|frontend-lint)
               npm ci
+              npm run typecheck
               npm run lint
+              npm test
+              npm run build
               ;;
             agent-check)
               npm ci
@@ -263,6 +275,28 @@ jobs:
             whatsapp-check)
               npm ci
               npm test
+              ;;
+            bridge-check)
+              # Depends on @neurowealth/vault-client via a file: reference
+              # (#998), so its dist/ must exist before `npm ci` here can
+              # resolve real type declarations rather than failing module
+              # resolution.
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run typecheck
+              npm test
+              ;;
+            monitoring-check)
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run typecheck
+              npm test
+              ;;
+            admin-panel-check)
+              (cd ../vault-client && npm ci && npm run build)
+              npm ci
+              npm run lint
+              npm run build
               ;;
             build-wasm)
               RUSTFLAGS="-C target-cpu=mvp" cargo build \
@@ -567,6 +601,21 @@ jobs:
       - name: Validate README
         run: bash scripts/check-readme.sh .
 
+  # i18n key parity (#932): every frontend locale catalog (en, es, fr, ja, pt,
+  # zh) must define exactly the keys in messages/en.json, and the locale lists
+  # in i18n/request.ts and middleware.ts must match the catalogs on disk.
+  i18n-parity:
+    name: Frontend i18n Key Parity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Check locale catalogs for missing/extra keys
+        run: python3 scripts/check-i18n-parity.py
+
   security-audit:
     name: Security Documentation Audit
     runs-on: ubuntu-latest
@@ -593,6 +642,9 @@ jobs:
 
       - name: Verify DataKey docs match lib.rs
         run: bash scripts/check-data-key-docs.sh
+
+      - name: Verify every test_*.rs file is registered in tests/mod.rs
+        run: bash scripts/check-test-registration.sh
 
   changes:
     name: Detect changes

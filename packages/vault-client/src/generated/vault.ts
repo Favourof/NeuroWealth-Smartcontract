@@ -627,6 +627,18 @@ export interface SharesMigratedEvent {
 }
 
 /** Emitted by the contract. */
+export interface MigrationReceivedEvent {
+  /** The user whose position was credited */
+  user: string;
+  /** The vault that sent the migrated funds */
+  source_vault: string;
+  /** Amount of assets (USDC) credited */
+  amount: bigint;
+  /** Shares minted for the credited amount */
+  shares_minted: bigint;
+}
+
+/** Emitted by the contract. */
 export interface MigrationTargetUpdatedEvent {
   /** Previous migration target address, or None if not set */
   old_target: string | null;
@@ -934,12 +946,6 @@ export const VaultErrorCode = {
   MultiProtocolNotEnabled: 78,
   /** The call requires single-protocol mode, but multi-protocol mode is active. */
   MultiProtocolEnabledError: 79,
-  /** The configured call rate for an operation has been exhausted. */
-  RateLimitExceeded: 77,
-  /** The owner supplied an unsupported rate-limit category. */
-  InvalidRateLimitCategory: 78,
-  /** A rate-limit window must be non-zero when a limit is enabled. */
-  InvalidRateLimitConfig: 79,
   /** A batch contains more entries than the configured maximum. */
   BatchSizeExceeded: 80,
   /** No adapter contract is configured for the requested protocol (#656). */
@@ -948,6 +954,26 @@ export const VaultErrorCode = {
   ProtocolNotWhitelisted: 82,
   /** The token is not configured for the requested vault asset operation. */
   UnsupportedAsset: 83,
+  /** The configured call rate for an operation has been exhausted. */
+  RateLimitExceeded: 84,
+  /** The owner supplied an unsupported rate-limit category. */
+  InvalidRateLimitCategory: 85,
+  /** A rate-limit window must be non-zero when a limit is enabled. */
+  InvalidRateLimitConfig: 86,
+  /** The withdrawal request has already been fulfilled. */
+  WithdrawalRequestAlreadyFulfilled: 87,
+  /** The withdrawal request has already been cancelled. */
+  WithdrawalRequestAlreadyCancelled: 88,
+  /** The caller is not the address that created this withdrawal request. */
+  NotRequestOwner: 89,
+  /** The caller is neither the primary agent nor the standby agent (#653). */
+  UnauthorizedAgentError: 90,
+  /** `pause()` was called while the vault is already paused (#988). */
+  AlreadyPaused: 91,
+  /** `update_standby_agent` was called with the primary agent's own address. Neither `NotInitialized` nor `InvalidStrategy` (the two variants this call site used interchangeably before) describes this case; both are unrelated error conditions reused by mistake. */
+  StandbyMatchesPrimaryAgent: 92,
+  /** The bootstrap 1:1 asset-to-share conversion was about to mint shares while existing shares are outstanding but the vault reports zero assets (#973). Minting here would value those existing holders' shares at zero, so the deposit is rejected instead. */
+  DepositRejectedZeroAssetsWithShares: 93,
   /** General validation error */
   ValidationError: 100,
   /** Vault is paused, deposits and withdrawals disabled */
@@ -1023,7 +1049,7 @@ export interface TxResult<T> {
   /** Raw transaction hash once submitted. */
   hash?: string;
   /** Raw simulation response (useful for debugging). */
-  simulation?: StellarSdk.SorobanRpc.Api.SimulateTransactionResponse;
+  simulation?: StellarSdk.rpc.Api.SimulateTransactionResponse;
 }
 
 /**
@@ -1050,7 +1076,7 @@ export interface TxResult<T> {
  */
 export class VaultClient {
   private readonly contractId: string;
-  private readonly server: StellarSdk.SorobanRpc.Server;
+  private readonly server: StellarSdk.rpc.Server;
   private readonly networkPassphrase: string;
 
   constructor(options: {
@@ -1064,7 +1090,7 @@ export class VaultClient {
     this.contractId = options.contractId;
     const rpcUrl = options.rpcUrl ?? 'https://soroban-testnet.stellar.org';
     this.networkPassphrase = options.networkPassphrase ?? StellarSdk.Networks.TESTNET;
-    this.server = new StellarSdk.SorobanRpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
+    this.server = new StellarSdk.rpc.Server(rpcUrl, { allowHttp: rpcUrl.startsWith('http://') });
   }
 
   // ------------------------------------------------------------------
@@ -1117,10 +1143,10 @@ export class VaultClient {
       .build();
 
     const sim = await this.server.simulateTransaction(tx);
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {
+    if (StellarSdk.rpc.Api.isSimulationError(sim)) {
       this.throwVaultError(method, sim.error ?? sim);
     }
-    const resultEntry = (sim as StellarSdk.SorobanRpc.Api.SimulateTransactionSuccessResponse).result;
+    const resultEntry = (sim as StellarSdk.rpc.Api.SimulateTransactionSuccessResponse).result;
     if (!resultEntry) return undefined as unknown as T;
     return scValToNative(resultEntry.retval) as T;
   }
@@ -1144,11 +1170,11 @@ export class VaultClient {
       .build();
 
     const sim = await this.server.simulateTransaction(tx);
-    if (StellarSdk.SorobanRpc.Api.isSimulationError(sim)) {
+    if (StellarSdk.rpc.Api.isSimulationError(sim)) {
       this.throwVaultError(method, sim.error ?? sim);
     }
 
-    const prepared = StellarSdk.SorobanRpc.assembleTransaction(tx, sim).build();
+    const prepared = StellarSdk.rpc.assembleTransaction(tx, sim).build();
     prepared.sign(signer);
 
     const sendResp = await this.server.sendTransaction(prepared);
@@ -1159,16 +1185,16 @@ export class VaultClient {
     // Poll until confirmed
     let getResp = await this.server.getTransaction(sendResp.hash);
     const deadline = Date.now() + 30_000;
-    while (getResp.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.NOT_FOUND
+    while (getResp.status === StellarSdk.rpc.Api.GetTransactionStatus.NOT_FOUND
         && Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 1000));
       getResp = await this.server.getTransaction(sendResp.hash);
     }
-    if (getResp.status === StellarSdk.SorobanRpc.Api.GetTransactionStatus.FAILED) {
+    if (getResp.status === StellarSdk.rpc.Api.GetTransactionStatus.FAILED) {
       this.throwVaultError(method, getResp);
     }
 
-    const retval = (getResp as StellarSdk.SorobanRpc.Api.GetSuccessfulTransactionResponse).returnValue;
+    const retval = (getResp as StellarSdk.rpc.Api.GetSuccessfulTransactionResponse).returnValue;
     return {
       hash: sendResp.hash,
       result: retval ? (scValToNative(retval) as T) : undefined,
@@ -1212,6 +1238,17 @@ export class VaultClient {
   async deposit(signer: StellarSdk.Keypair, user: string, amount: bigint): Promise<TxResult<void>> {
     const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(user).toScVal(), nativeToScVal(amount, { type: 'i128' })];
     return this.invoke<void>('deposit', args, signer);
+  }
+
+  /**
+   * Function receive_migration
+   * @param source_vault
+   * @param user
+   * @param amount
+   */
+  async receive_migration(signer: StellarSdk.Keypair, source_vault: string, user: string, amount: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(source_vault).toScVal(), new StellarSdk.Address(user).toScVal(), nativeToScVal(amount, { type: 'i128' })];
+    return this.invoke<void>('receive_migration', args, signer);
   }
 
   /**
@@ -1347,13 +1384,14 @@ export class VaultClient {
 
   /**
    * AI agent rebalances funds between yield protocols
+   * @param agent
    * @param protocol
    * @param expected_apy
    * @param min_out
    * @fires RebalanceEvent
    */
-  async rebalance(signer: StellarSdk.Keypair, protocol: string, expected_apy: bigint, min_out: bigint): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(expected_apy, { type: 'i128' }), nativeToScVal(min_out, { type: 'i128' })];
+  async rebalance(signer: StellarSdk.Keypair, agent: string, protocol: string, expected_apy: bigint, min_out: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(expected_apy, { type: 'i128' }), nativeToScVal(min_out, { type: 'i128' })];
     return this.invoke<void>('rebalance', args, signer);
   }
 
@@ -1408,11 +1446,12 @@ export class VaultClient {
 
   /**
    * Function set_protocol_apy
+   * @param agent
    * @param protocol
    * @param apy_bps
    */
-  async set_protocol_apy(signer: StellarSdk.Keypair, protocol: string, apy_bps: number): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(apy_bps, { type: 'u32' })];
+  async set_protocol_apy(signer: StellarSdk.Keypair, agent: string, protocol: string, apy_bps: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(apy_bps, { type: 'u32' })];
     return this.invoke<void>('set_protocol_apy', args, signer);
   }
 
@@ -1435,21 +1474,23 @@ export class VaultClient {
 
   /**
    * Function rebalance_multi
+   * @param agent
    * @param blend_bps
    * @param dex_bps
    * @param min_out
    */
-  async rebalance_multi(signer: StellarSdk.Keypair, blend_bps: number, dex_bps: number, min_out: bigint): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(blend_bps, { type: 'u32' }), nativeToScVal(dex_bps, { type: 'u32' }), nativeToScVal(min_out, { type: 'i128' })];
+  async rebalance_multi(signer: StellarSdk.Keypair, agent: string, blend_bps: number, dex_bps: number, min_out: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(blend_bps, { type: 'u32' }), nativeToScVal(dex_bps, { type: 'u32' }), nativeToScVal(min_out, { type: 'i128' })];
     return this.invoke<void>('rebalance_multi', args, signer);
   }
 
   /**
    * Function harvest
+   * @param agent
    * @param min_out
    */
-  async harvest(signer: StellarSdk.Keypair, min_out: bigint): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(min_out, { type: 'i128' })];
+  async harvest(signer: StellarSdk.Keypair, agent: string, min_out: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(min_out, { type: 'i128' })];
     return this.invoke<void>('harvest', args, signer);
   }
 
@@ -1736,13 +1777,31 @@ export class VaultClient {
   }
 
   /**
+   * Function set_max_decrease_bps
+   * @param bps
+   */
+  async set_max_decrease_bps(signer: StellarSdk.Keypair, bps: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(bps, { type: 'u32' })];
+    return this.invoke<void>('set_max_decrease_bps', args, signer);
+  }
+
+  /**
+   * Function get_max_decrease_bps
+   */
+  async get_max_decrease_bps(sourcePublicKey: string): Promise<number> {
+    const args: StellarSdk.xdr.ScVal[] = [];
+    return this.simulate<number>('get_max_decrease_bps', args, sourcePublicKey);
+  }
+
+  /**
    * Function submit_mev_report
+   * @param agent
    * @param protocol
    * @param estimated_loss_stroops
    * @param min_out_used
    */
-  async submit_mev_report(signer: StellarSdk.Keypair, protocol: string, estimated_loss_stroops: bigint, min_out_used: bigint): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(estimated_loss_stroops, { type: 'i128' }), nativeToScVal(min_out_used, { type: 'i128' })];
+  async submit_mev_report(signer: StellarSdk.Keypair, agent: string, protocol: string, estimated_loss_stroops: bigint, min_out_used: bigint): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(protocol, { type: 'symbol' }), nativeToScVal(estimated_loss_stroops, { type: 'i128' }), nativeToScVal(min_out_used, { type: 'i128' })];
     return this.invoke<void>('submit_mev_report', args, signer);
   }
 
@@ -1765,10 +1824,11 @@ export class VaultClient {
 
   /**
    * Function submit_apy_prediction
+   * @param agent
    * @param prediction
    */
-  async submit_apy_prediction(signer: StellarSdk.Keypair, prediction: unknown): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [nativeToScVal(prediction)];
+  async submit_apy_prediction(signer: StellarSdk.Keypair, agent: string, prediction: unknown): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(prediction)];
     return this.invoke<void>('submit_apy_prediction', args, signer);
   }
 
@@ -2105,11 +2165,11 @@ export class VaultClient {
    * @param agent
    * @param new_total
    * @param allow_decrease
-   * @param max_decrease_bps
+   * @param _max_decrease_bps
    * @fires AssetsUpdatedEvent
    */
-  async update_total_assets(signer: StellarSdk.Keypair, agent: string, new_total: bigint, allow_decrease: boolean, max_decrease_bps: number): Promise<TxResult<void>> {
-    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(new_total, { type: 'i128' }), nativeToScVal(allow_decrease, { type: 'bool' }), nativeToScVal(max_decrease_bps, { type: 'u32' })];
+  async update_total_assets(signer: StellarSdk.Keypair, agent: string, new_total: bigint, allow_decrease: boolean, _max_decrease_bps: number): Promise<TxResult<void>> {
+    const args: StellarSdk.xdr.ScVal[] = [new StellarSdk.Address(agent).toScVal(), nativeToScVal(new_total, { type: 'i128' }), nativeToScVal(allow_decrease, { type: 'bool' }), nativeToScVal(_max_decrease_bps, { type: 'u32' })];
     return this.invoke<void>('update_total_assets', args, signer);
   }
 

@@ -255,6 +255,57 @@ idle and are not supplied to or redeemed from the USDC-only Blend/DEX
 integrations. Protocol clients independently enforce the configured token
 before querying token balances or calling a pool.
 
+### 8. Yield Sniping Protection (Issue #975)
+
+**Threat**: Yield reaches the share price only when the agent calls `update_total_assets`,
+which can raise `TotalAssets` by any amount up to the real balance in one step.
+With `MinHoldingPeriod` defaulting to 0, anyone watching the mempool or the agent's
+schedule could deposit just before the update and withdraw right after, capturing
+yield accrued over a period they were not invested.
+
+**Mitigation**: The vault now initializes with a non-zero default `MinHoldingPeriod`
+of 120 ledgers (~10 minutes). This prevents same-block deposit/withdraw cycles
+that would allow yield sniping. The owner can adjust this period via `set_min_holding_period`
+if needed for operational reasons, but the default provides baseline protection.
+
+**Impact**: Attackers attempting to snipe yield must now wait at least 120 ledgers
+between deposit and withdrawal, making the attack unprofitable for typical yield
+reporting intervals.
+
+### 9. Decrease Cap Configuration (Issue #974)
+
+**Threat**: `update_total_assets(agent, new_total, allow_decrease, max_decrease_bps)`
+capped a loss report at `max(max_decrease_bps, 100)` bps of the old total. The cap
+was a caller-supplied argument, so the caller could pass `10_000` and report a 100%
+loss in one call. The only safeguard was the owner co-sign requirement.
+
+**Mitigation**: The decrease cap is now stored in owner-configured storage
+(`DataKey::MaxDecreaseBps`) with a sane default of 1000 bps (10%) and a hard
+ceiling of 10_000 bps (100%). The caller-supplied argument in `update_total_assets`
+is ignored. The owner can configure the cap via `set_max_decrease_bps`, but cannot
+exceed the hard ceiling.
+
+**Impact**: Even with owner co-sign, a single transaction cannot report a loss
+exceeding the configured cap (default 10%). Repeated calls cannot chain past the
+limit without additional owner authorization for each call.
+
+### 10. Zero-Assets-With-Shares Protection (Issue #973)
+
+**Threat**: `convert_to_shares_internal` used a bootstrap 1:1 rate when
+`total_shares == 0 || total_assets == 0`. If shares were outstanding but assets
+were zero (e.g., after a full loss report, or dust shares remaining after rounding),
+a new depositor would get `amount` shares while existing holders, whose shares were
+worth nothing, would immediately own a pro-rata slice of the new deposit.
+
+**Mitigation**: When `total_shares > 0 && total_assets == 0`, deposits are rejected
+with the typed error `VaultError::DepositRejectedZeroAssetsWithShares`. This prevents
+the dilution attack. The vault must be in a recovery mode (owner intervention) to
+accept new deposits in this state.
+
+**Impact**: New depositors cannot be diluted by existing worthless shares. The vault
+requires explicit recovery action (e.g., owner-initiated loss write-down or share
+restructuring) before accepting new deposits after a total loss event.
+
 ## Centralization-Risk Register
 
 This register documents every owner-only and agent-only capability, the blast radius if the corresponding key is compromised, and the existing mitigation status.
@@ -282,6 +333,8 @@ This register documents every owner-only and agent-only capability, the blast ra
 | update_agent | yes | - | - | - |
 | confirm_agent_update | yes | - | - | - |
 | cancel_agent_update | yes | - | - | - |
+| update_standby_agent | yes | - | - | - |
+| switch_to_standby_agent | yes | - | - | - |
 | update_total_assets | - | yes | - | - |
 | deposit | - | - | yes | - |
 | withdraw | - | - | yes | - |
@@ -291,6 +344,7 @@ This register documents every owner-only and agent-only capability, the blast ra
 | pause | yes | - | - | - |
 | emergency_pause | yes | - | - | - |
 | unpause | yes | - | - | - |
+| reset_circuit_breaker | yes | - | - | - |
 | set_caps | yes | - | - | - |
 | set_tvl_cap | yes | - | - | - |
 | set_user_deposit_cap | yes | - | - | - |
@@ -304,12 +358,17 @@ This register documents every owner-only and agent-only capability, the blast ra
 | cancel_upgrade | yes | - | - | - |
 | set_blend_pool | yes | - | - | - |
 | set_dex_pool | yes | - | - | - |
+| schedule_migration_target | yes | - | - | - |
+| execute_migration_target | yes | - | - | - |
+| cancel_migration_target | yes | - | - | - |
+| set_migration_paused | yes | - | - | - |
 | transfer_ownership | yes | - | - | - |
 | cancel_ownership_transfer | yes | - | - | - |
 | accept_ownership | - | - | - | pending owner |
 | touch_user_ttl | - | - | - | anyone |
 | set_user_strategy | - | - | yes | - |
 | set_min_holding_period | yes | - | - | - |
+| get_min_holding_period | - | - | - | anyone |
 | submit_mev_report | - | yes | - | - |
 | set_max_acceptable_mev_loss | yes | - | - | - |
 | submit_apy_prediction | - | yes | - | - |
@@ -327,12 +386,14 @@ This register documents every owner-only and agent-only capability, the blast ra
 | process_withdrawal_queue | - | yes | - | - |
 | queue_withdrawal | - | - | yes | - |
 | rebalance_multi | - | yes | - | - |
+| receive_migration | - | - | - | anyone |
 | remove_supported_asset | yes | - | - | - |
 | reset_circuit_breaker | yes | - | - | - |
 | schedule_migration_target | yes | - | - | - |
 | set_batch_size_limit | yes | - | - | - |
 | set_max_batch_size | yes | - | - | - |
 | set_max_consecutive_failures | yes | - | - | - |
+| set_max_decrease_bps | yes | - | - | - |
 | set_migration_paused | yes | - | - | - |
 | set_protocol_apy | - | yes | - | - |
 | set_queue_config | yes | - | - | - |
@@ -344,6 +405,46 @@ This register documents every owner-only and agent-only capability, the blast ra
 | update_standby_agent | yes | - | - | - |
 | withdraw_asset | - | - | yes | - |
 
+
+### Timelock and Pause Behavior for Newer Privileged Functions (Issue #997)
+
+The table above names the caller for every privileged function, but not
+whether that call is delayed by a timelock or still reachable while the
+vault is paused. Both properties matter for an incident responder deciding
+whether a given function can be used to make the situation worse (or
+better) right now. The table below covers the functions added since the
+table above was last extended; `update_agent` and `switch_to_standby_agent`
+are included for contrast, since together they are the timelock gap this
+issue asks to be noted explicitly.
+
+| Function | Caller | Timelocked? | Allowed while paused? |
+|----------|--------|-------------|------------------------|
+| `update_agent` | Owner | **Yes** (`AGENT_TIMELOCK_LEDGERS`, step 1 of `update_agent`/`confirm_agent_update`) | Yes (no pause check) |
+| `update_standby_agent` | Owner | No | Yes (no pause check) |
+| `switch_to_standby_agent` | Owner | **No** — instant, by design (see function doc: "no timelock, no 24-hour wait") | Yes (no pause check) |
+| `schedule_migration_target` | Owner | Yes (`MIGRATION_TARGET_TIMELOCK_LEDGERS`, step 1 of 2) | Yes (no pause check) |
+| `execute_migration_target` | Owner | Yes (must wait for the scheduled delay to elapse) | Yes (no pause check) |
+| `cancel_migration_target` | Owner | No (cancels a pending timelock; not itself delayed) | Yes (no pause check) |
+| `set_migration_paused` | Owner | No | Yes (no pause check) |
+| `reset_circuit_breaker` | Owner | No | **Yes, deliberately** — its entire purpose is to clear `Paused` |
+| `process_withdrawal_queue` | Anyone (authenticated; the `agent` parameter is accepted but never checked against the stored agent address — see function doc, "kept for ABI compatibility") | No | Yes (no pause check) |
+| `set_min_holding_period` | Owner | No | Yes (no pause check) |
+| `set_rate_limit`, `set_rate_limit_config` | Owner | No | Yes (no pause check) |
+| `set_queue_config` | Owner | No | Yes (no pause check) |
+
+**The standby-agent timelock gap (tracked in #954, open).** `update_agent`
+(primary agent rotation) is timelocked specifically so a compromised owner
+key cannot instantly hand agent authority to an attacker-controlled address
+— the delay gives the real owner a window to notice and react via
+`cancel_agent_update`. `update_standby_agent` and `switch_to_standby_agent`
+provide no equivalent delay: an owner (or an attacker who has compromised
+the owner key) can set an arbitrary address as standby and instantly
+promote it to primary agent in two calls, with no timelock and no cooldown
+between them, which defeats the timelock users rely on to react to a
+malicious agent change. Until #954 is resolved, treat standby-agent
+rotation as carrying the same trust assumptions as an instant, undelayed
+owner action, not the delayed-and-cancellable guarantee `update_agent`
+provides.
 
 ### Emergency Harvest Fallback (Issue #506)
 
